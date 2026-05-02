@@ -1,0 +1,127 @@
+[project]
+name = "winbindex"
+version = "1.0.1"
+description = "A python module for the Winbindex service to download Windows binaries and PDB files."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "GPL-3.0-or-later" }
+authors = [{ name = "CaptWake" }]
+keywords = [
+    "winbindex",
+    "windows",
+    "pdb",
+    "symbols",
+    "reverse-engineering",
+    "msdl",
+    "symbol-server",
+]
+classifiers = [
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Security",
+    "Topic :: Software Development :: Libraries :: Python Modules"
+]
+dependencies = [
+    "requests>=2.33",
+    "pefile>=2024.8.26",
+    "pydantic>=2.13.3",
+]
+
+[project.urls]
+Homepage = "http://github.com/CaptWake/winbindex"
+"Winbindex Service" = "https://winbindex.m417z.com/"
+
+[project.scripts]
+winbindex = "winbindex.cli:main"
+
+[dependency-groups]
+dev = [
+    "bump-my-version==1.3.0",
+    "pre-commit==4.6.0",
+    "ruff==0.15.12",
+    "mypy==1.20.2",
+    "pytest==9.0.3",
+    "types-requests==2.33.0.20260408",
+    "responses==0.26.0"
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["winbindex"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "winbindex",
+    "README.md",
+    "LICENSE",
+    "pyproject.toml",
+    "tests",
+    "examples",
+]
+
+# ----------------------------------------------------------------------
+# Ruff configuration
+# ----------------------------------------------------------------------
+[tool.ruff]
+line-length = 120
+src = ["winbindex", "tests", "examples"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle (base style rules)
+    "F",   # Pyflakes (logical/syntax errors)
+    "I",   # isort (import sorting)
+    "B",   # flake8-bugbear (common bugs/design problems)
+    "C4",  # flake8-comprehensions (simplify list/dict comprehensions)
+    "ISC", # flake8-implicit-str-concat (detect accidental multi-line string issues)
+    "T20", # flake8-print (prevent leftover print/pprint statements)
+    "SIM", # flake8-simplify (code simplification upgrades)
+    "G",   # flake8-logging-format (logging statement validation)
+    "TD",  # flake8-todos (TODO formatting requirements)
+    "PTH", # flake8-use-pathlib (migration from os.path to Pathlib)
+    "UP",  # pyupgrade (modern Python syntax upgrades)
+]
+ignore = [
+    "D100", # Missing docstring in public module
+    "D104", # Missing docstring in public package
+    "D107", # Missing docstring in __init__
+    "D203", # 1 blank line required before class docstring (conflicts with D211)
+    "D213", # Multi-line docstring summary should start at the second line
+    "PLR0913", # Too many arguments
+    "PLR2004", # Magic value used in comparison
+    "ANN401",  # Disallow Any (we need it for raw JSON)
+    "T201" # TODO: remove it when use logger instead of print
+]
+
+[tool.ruff.lint.isort]
+length-sort = true
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true
+
+# ----------------------------------------------------------------------
+# Pytest configuration
+# ----------------------------------------------------------------------
+[tool.pytest.ini_options]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+]
+testpaths = ["tests"]

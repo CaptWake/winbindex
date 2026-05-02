@@ -1,0 +1,59 @@
+repos:
+
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: ruff format
+        stages: [pre-commit, pre-push, manual]
+        language: system
+        entry: ruff
+        args:
+          - format
+          - winbindex/
+          - tests/
+          - examples/
+        always_run: true
+        pass_filenames: false
+
+  - repo: local
+    hooks:
+      - id: ruff
+        name: ruff
+        stages: [pre-commit, pre-push, manual]
+        language: system
+        entry: ruff
+        args:
+          - check
+          - --fix
+          - winbindex/
+          - tests/
+          - examples/
+        always_run: true
+        pass_filenames: false
+
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy
+        stages: [pre-commit, pre-push, manual]
+        language: system
+        entry: mypy
+        args:
+          - --check-untyped-defs
+          - --ignore-missing-imports
+          - winbindex/
+          - tests/
+          - examples/
+        always_run: true
+        pass_filenames: false
+
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest
+        stages: [pre-push]
+        language: system
+        entry: pytest
+        args:
+          - -ra
+        pass_filenames: false
