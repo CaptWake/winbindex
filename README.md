@@ -77,7 +77,7 @@ with WinbindexClient() as client:
     binary = client.download_binary(entry, "downloads/")
 
     if not entry.has_pdb_download:
-        pdb_info = extract_pdb_info(binary)        # requires winbindex[pdb]
+        pdb_info = extract_pdb_info(binary)
         client.download_pdb(pdb_info, "downloads/")
 ```
 
