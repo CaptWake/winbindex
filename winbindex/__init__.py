@@ -29,15 +29,28 @@ from .client import (
     DEFAULT_WINBINDEX_BASE_URL,
     WinbindexClient,
     ProgressCallback,
+    filter_entries,
+    default_cache_dir,
 )
-from .models import PdbInfo, FileInfo, FileEntry, WindowsRelease
+from .models import (
+    MACHINE_NAMES,
+    PdbInfo,
+    FileInfo,
+    FileEntry,
+    WindowsRelease,
+    machine_name,
+    parse_version,
+    parse_machine_type,
+)
 from .version import __version__
+from .utils.pdb import extract_pdb_info, extract_pdb_info_from_bytes
 from .exceptions import (
     DownloadError,
     WinbindexError,
     InvalidDataError,
     FileNotIndexedError,
     MissingPdbInfoError,
+    InvalidFilenameError,
     MissingDownloadInfoError,
 )
 from .symbol_server import (
@@ -52,11 +65,13 @@ __all__ = [
     "DEFAULT_SYMBOL_SERVER_URL",
     "DEFAULT_USER_AGENT",
     "DEFAULT_WINBINDEX_BASE_URL",
+    "MACHINE_NAMES",
     "DownloadError",
     "FileEntry",
     "FileInfo",
     "FileNotIndexedError",
     "InvalidDataError",
+    "InvalidFilenameError",
     "MissingDownloadInfoError",
     "MissingPdbInfoError",
     "PdbInfo",
@@ -66,17 +81,12 @@ __all__ = [
     "WindowsRelease",
     "build_binary_url",
     "build_pdb_url",
+    "default_cache_dir",
+    "extract_pdb_info",
+    "extract_pdb_info_from_bytes",
+    "filter_entries",
+    "machine_name",
     "normalize_guid",
+    "parse_machine_type",
+    "parse_version",
 ]
-
-
-# PDB extraction helpers are optional (require ``pefile``); export them
-# under their public names without forcing the import at package load.
-def __getattr__(name: str) -> object:
-    if name in {"extract_pdb_info", "extract_pdb_info_from_bytes"}:
-        from .utils import pdb  # noqa: PLC0415  (intentional lazy import)
-
-        return getattr(pdb, name)
-    raise AttributeError(f"module 'winbindex' has no attribute {name!r}")
-
-

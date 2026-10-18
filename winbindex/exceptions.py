@@ -7,11 +7,18 @@ class WinbindexError(Exception):
     """Base class for all errors raised by the :mod:`winbindex` package."""
 
 
+class InvalidFilenameError(WinbindexError, ValueError):
+    """Raised when a filename cannot be a Windows binary name.
+
+    Subclasses :class:`ValueError` for backwards compatibility.
+    """
+
+
 class FileNotIndexedError(WinbindexError):
     """Raised when the requested filename is not indexed by Winbindex.
 
-    This typically corresponds to an HTTP 404 returned by the Winbindex
-    service when fetching the JSON metadata for a given filename.
+    This corresponds to an HTTP 404 returned by the Winbindex service
+    when fetching the JSON metadata for a given filename.
     """
 
     def __init__(self, filename: str) -> None:
@@ -20,16 +27,20 @@ class FileNotIndexedError(WinbindexError):
 
 
 class DownloadError(WinbindexError):
-    """Raised when downloading a binary or PDB from the symbol server fails.
+    """Raised when an HTTP request to Winbindex or the symbol server fails.
 
-    This wraps any underlying HTTP / network error. The :attr:`url`
-    attribute is set to the URL that was being fetched at the time of
-    the failure.
+    Attributes:
+        message: The failure description without the URL.
+        url: The URL that was being fetched at the time of the failure.
+        status_code: The HTTP status code, or ``None`` for network-level
+            failures (timeouts, connection resets, …).
     """
 
-    def __init__(self, message: str, url: str) -> None:
+    def __init__(self, message: str, url: str, *, status_code: int | None = None) -> None:
         super().__init__(f"{message} (url: {url})")
+        self.message = message
         self.url = url
+        self.status_code = status_code
 
 
 class MissingDownloadInfoError(WinbindexError):

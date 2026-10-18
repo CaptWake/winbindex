@@ -16,12 +16,14 @@ documented as thread-safe by ``urllib3``.
 
 from __future__ import annotations
 
+import os
 import re
+import sys
 import gzip
 import json
 import time
-import shutil
 import logging
+import tempfile
 from typing import Any
 from pathlib import Path
 from dataclasses import dataclass
@@ -30,7 +32,8 @@ from collections.abc import Mapping, Callable, Iterable, Iterator
 
 import requests
 
-from .models import PdbInfo, FileEntry
+from .models import PdbInfo, FileEntry, _check_bare_filename
+from .version import __version__
 from .exceptions import (
     DownloadError,
     InvalidDataError,
@@ -38,7 +41,14 @@ from .exceptions import (
 )
 from .symbol_server import DEFAULT_SYMBOL_SERVER_URL, build_pdb_url
 
-__all__ = ["DEFAULT_WINBINDEX_BASE_URL", "ProgressCallback", "WinbindexClient"]
+__all__ = [
+    "DEFAULT_USER_AGENT",
+    "DEFAULT_WINBINDEX_BASE_URL",
+    "ProgressCallback",
+    "WinbindexClient",
+    "default_cache_dir",
+    "filter_entries",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -47,11 +57,31 @@ DEFAULT_WINBINDEX_BASE_URL = "https://winbindex.m417z.com/data"
 
 #: Default User-Agent used for outbound HTTP requests. Overridable via
 #: the ``user_agent`` argument of :class:`WinbindexClient`.
-DEFAULT_USER_AGENT = "winbindex-python/0.1 (+https://github.com/m417z/winbindex)"
+DEFAULT_USER_AGENT = f"winbindex-python/{__version__} (+https://github.com/CaptWake/winbindex)"
 
 #: Type of an optional progress callback passed to download helpers.
 #: Receives ``(bytes_downloaded, total_bytes_or_None)``.
 ProgressCallback = Callable[[int, "int | None"], None]
+
+
+def default_cache_dir() -> Path:
+    """Return the platform-appropriate cache directory for Winbindex metadata.
+
+    ``$WINBINDEX_CACHE_DIR`` wins when set. Otherwise
+    ``%LOCALAPPDATA%\\winbindex\\cache`` on Windows,
+    ``~/Library/Caches/winbindex`` on macOS and
+    ``$XDG_CACHE_HOME/winbindex`` (default ``~/.cache/winbindex``) elsewhere.
+    """
+    override = os.environ.get("WINBINDEX_CACHE_DIR")
+    if override:
+        return Path(override).expanduser()
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return Path(base) / "winbindex" / "cache"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Caches" / "winbindex"
+    base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+    return Path(base) / "winbindex"
 
 
 @dataclass
@@ -74,7 +104,8 @@ class WinbindexClient:
             ``symstore``-formatted cache served over HTTP).
         cache_dir: If set, fetched JSON files are persisted here so
             that subsequent calls do not hit the network. Cache files
-            are validated against the optional ``cache_ttl``.
+            are validated against the optional ``cache_ttl``. See
+            :func:`default_cache_dir` for a sensible default.
         cache_ttl: Time-to-live in seconds for files in ``cache_dir``.
             ``None`` means cached files never expire.
         timeout: Per-request HTTP timeout in seconds. Applied to every
@@ -83,7 +114,7 @@ class WinbindexClient:
             When ``None`` a fresh session is constructed.
         user_agent: Custom User-Agent header value.
         max_retries: Maximum number of retries on transient failures
-            (``429``, ``5xx``).
+            (``429``, ``5xx``, connection errors).
 
     Example:
         >>> client = WinbindexClient(cache_dir="~/.cache/winbindex")
@@ -148,6 +179,8 @@ class WinbindexClient:
             The decoded JSON object — a mapping ``sha256 -> entry``.
 
         Raises:
+            InvalidFilenameError: If ``filename`` is not a plausible
+                Windows filename (empty, contains a path separator, …).
             FileNotIndexedError: If the server returns ``404``.
             DownloadError: For any other HTTP / network failure.
             InvalidDataError: If the response is not valid gzipped JSON.
@@ -158,13 +191,18 @@ class WinbindexClient:
             return cached
 
         url = f"{self.base_url}/by_filename_compressed/{quote(normalized, safe='')}.json.gz"
+        logger.info("Fetching metadata for %s from %s", normalized, url)
         try:
-            response = self._request("GET", url, stream=True)
-        except FileNotIndexedError:
-            raise FileNotIndexedError(filename) from None
+            response = self._request("GET", url)
+        except DownloadError as err:
+            if err.status_code == 404:
+                raise FileNotIndexedError(filename) from None
+            raise
 
         try:
             content = response.content
+        except requests.RequestException as err:
+            raise DownloadError(f"connection failed while reading response: {err}", url) from err
         finally:
             response.close()
 
@@ -187,6 +225,9 @@ class WinbindexClient:
     def get_file(self, filename: str) -> list[FileEntry]:
         """Return all known versions of ``filename`` as :class:`FileEntry` objects.
 
+        Malformed entries are skipped with a warning rather than
+        aborting the whole listing.
+
         Args:
             filename: A Windows binary filename, e.g. ``"kernel32.dll"``.
 
@@ -205,11 +246,12 @@ class WinbindexClient:
         for sha256, entry in raw.items():
             try:
                 entries.append(FileEntry.from_dict(normalized, sha256, entry))
-            except InvalidDataError:
+            except InvalidDataError as err:
                 logger.warning(
-                    "Skipping malformed Winbindex entry sha256=%s for %s",
+                    "Skipping malformed Winbindex entry sha256=%s for %s: %s",
                     sha256,
                     normalized,
+                    err,
                 )
         return entries
 
@@ -230,27 +272,8 @@ class WinbindexClient:
         """Iterate over entries matching a set of filter criteria.
 
         All filters are combined with logical AND. Pass ``None`` (the
-        default) to skip any given filter.
-
-        Args:
-            filename: A Windows binary filename.
-            sha256: Match a specific SHA256 hash (case-insensitive).
-            version: A wildcard pattern matched against
-                :attr:`FileEntry.version`. Supports ``*`` and ``?``.
-                Example: ``"10.0.22621.*"``.
-            windows_version: Match entries that appear in this Windows
-                version (e.g. ``"11-22H2"``).
-            update: Match entries that appear in this KB / update
-                identifier (e.g. ``"KB5023778"`` or ``"BASE"``).
-            machine_type: Filter on the PE machine type (e.g.
-                ``0x8664`` for x64, ``0x14C`` for x86, ``0xAA64`` for
-                ARM64).
-            signed: If ``True``, only return signed binaries.
-            downloadable: If ``True``, only return entries that have
-                enough metadata to build a binary URL.
-            with_pdb: If ``True``, only return entries that include
-                PDB metadata.
-            predicate: Optional user-supplied predicate evaluated last.
+        default) to skip any given filter. See :func:`filter_entries`
+        for the semantics of each filter.
 
         Yields:
             Each :class:`FileEntry` that satisfies every supplied
@@ -259,33 +282,18 @@ class WinbindexClient:
         Raises:
             FileNotIndexedError: If ``filename`` is not indexed.
         """
-        version_re = _wildcard_to_regex(version) if version else None
-        sha_lower = sha256.lower() if sha256 else None
-
-        for entry in self.get_file(filename):
-            if sha_lower is not None and entry.sha256 != sha_lower:
-                continue
-            if version_re is not None and (
-                entry.version is None or not version_re.match(entry.version)
-            ):
-                continue
-            if windows_version is not None and windows_version not in entry.windows_versions:
-                continue
-            if update is not None and update not in entry.updates:
-                continue
-            if machine_type is not None and entry.file_info.machine_type != machine_type:
-                continue
-            if signed is not None:
-                is_signed = entry.file_info.signing_status == "Signed"
-                if signed != is_signed:
-                    continue
-            if downloadable is not None and entry.has_binary_download != downloadable:
-                continue
-            if with_pdb is not None and entry.has_pdb_download != with_pdb:
-                continue
-            if predicate is not None and not predicate(entry):
-                continue
-            yield entry
+        yield from filter_entries(
+            self.get_file(filename),
+            sha256=sha256,
+            version=version,
+            windows_version=windows_version,
+            update=update,
+            machine_type=machine_type,
+            signed=signed,
+            downloadable=downloadable,
+            with_pdb=with_pdb,
+            predicate=predicate,
+        )
 
     # ------------------------------------------------------------------
     # Downloads
@@ -301,8 +309,9 @@ class WinbindexClient:
     ) -> Path:
         """Download the binary referenced by ``entry`` to ``dest``.
 
-        ``dest`` may be either a directory, in which case the file is
-        written under ``dest/<filename>``, or a full file path.
+        ``dest`` may be either an existing directory (or a path ending
+        in a separator), in which case the file is written under
+        ``dest/<filename>``, or a full file path.
 
         Args:
             entry: The :class:`FileEntry` to download.
@@ -318,15 +327,15 @@ class WinbindexClient:
 
         Raises:
             MissingDownloadInfoError: If the entry has no download URL.
-            DownloadError: On HTTP / network failure.
+            DownloadError: On HTTP / network failure, including a
+                ``404`` when the symbol server does not host this build
+                (``status_code == 404``).
             FileExistsError: If ``overwrite`` is ``False`` and the file
                 already exists.
         """
         url = entry.binary_url(base_url=self.symbol_server_url)
         target = _resolve_dest(dest, entry.filename)
-        return self._download_to_file(
-            url, target, overwrite=overwrite, progress=progress, chunk_size=chunk_size
-        )
+        return self._download_to_file(url, target, overwrite=overwrite, progress=progress, chunk_size=chunk_size)
 
     def download_pdb(
         self,
@@ -343,7 +352,7 @@ class WinbindexClient:
         own :attr:`~FileEntry.pdb` triple is used) or an explicit
         :class:`PdbInfo`. The latter is useful when the PDB triple was
         extracted from a downloaded binary using
-        :func:`winbindex.pdb_utils.extract_pdb_info`.
+        :func:`winbindex.extract_pdb_info`.
 
         Args:
             entry_or_pdb: Source of the PDB triple.
@@ -376,9 +385,7 @@ class WinbindexClient:
             pdb_name = entry_or_pdb.name
 
         target = _resolve_dest(dest, pdb_name)
-        return self._download_to_file(
-            url, target, overwrite=overwrite, progress=progress, chunk_size=chunk_size
-        )
+        return self._download_to_file(url, target, overwrite=overwrite, progress=progress, chunk_size=chunk_size)
 
     def download_many(
         self,
@@ -392,9 +399,10 @@ class WinbindexClient:
     ) -> list[Path]:
         """Bulk-download a sequence of entries.
 
-        Each binary lands under ``dest_dir/<sha256>/<filename>`` so that
-        multiple versions of the same filename do not collide. PDBs (if
-        requested) are written next to the binary.
+        Each binary lands under ``dest_dir/<sha256[:16]>/<filename>`` so
+        that multiple versions of the same filename do not collide.
+        PDBs (if requested) are written next to the binary. Entries with
+        nothing to download are skipped without touching the disk.
 
         Args:
             entries: An iterable of :class:`FileEntry` objects to fetch.
@@ -413,31 +421,21 @@ class WinbindexClient:
             appearing immediately after their binary when present.
         """
         root = Path(dest_dir).expanduser()
-        root.mkdir(parents=True, exist_ok=True)
 
         written: list[Path] = []
         for entry in entries:
+            want_binary = entry.has_binary_download
+            want_pdb = include_pdb and entry.has_pdb_download
+            if not (want_binary or want_pdb):
+                continue
+
             entry_dir = root / entry.sha256[:16]
-            entry_dir.mkdir(parents=True, exist_ok=True)
             try:
-                if entry.has_binary_download:
-                    written.append(
-                        self.download_binary(
-                            entry,
-                            entry_dir,
-                            overwrite=overwrite,
-                            progress=progress,
-                        )
-                    )
-                if include_pdb and entry.has_pdb_download:
-                    written.append(
-                        self.download_pdb(
-                            entry,
-                            entry_dir,
-                            overwrite=overwrite,
-                            progress=progress,
-                        )
-                    )
+                entry_dir.mkdir(parents=True, exist_ok=True)
+                if want_binary:
+                    written.append(self.download_binary(entry, entry_dir, overwrite=overwrite, progress=progress))
+                if want_pdb:
+                    written.append(self.download_pdb(entry, entry_dir, overwrite=overwrite, progress=progress))
             except Exception as err:
                 if on_error is None:
                     raise
@@ -448,36 +446,35 @@ class WinbindexClient:
     # Internal helpers
     # ------------------------------------------------------------------
     def _request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
-        """Perform an HTTP request with simple retry / 404 handling."""
+        """Perform an HTTP request with simple retry handling.
+
+        Raises:
+            DownloadError: For network failures and non-2xx responses.
+                ``status_code`` is set for HTTP errors (e.g. ``404``).
+        """
         last_exc: Exception | None = None
         for attempt in range(self._retry.total + 1):
             try:
-                response = self._session.request(
-                    method,
-                    url,
-                    timeout=self.timeout,
-                    **kwargs,
-                )
+                response = self._session.request(method, url, timeout=self.timeout, **kwargs)
             except requests.RequestException as err:
                 last_exc = err
                 if attempt >= self._retry.total:
                     raise DownloadError(str(err), url) from err
+                logger.debug("Request to %s failed (%s); retrying", url, err)
                 self._sleep_for_retry(attempt)
                 continue
 
-            if response.status_code == 404:
-                response.close()
-                raise FileNotIndexedError(url)
             if response.status_code in self._retry.statuses:
                 response.close()
                 if attempt >= self._retry.total:
-                    raise DownloadError(f"HTTP {response.status_code}", url)
+                    raise DownloadError(f"HTTP {response.status_code}", url, status_code=response.status_code)
+                logger.debug("HTTP %s from %s; retrying", response.status_code, url)
                 self._sleep_for_retry(attempt)
                 continue
             if not response.ok:
                 status = response.status_code
                 response.close()
-                raise DownloadError(f"HTTP {status}", url)
+                raise DownloadError(f"HTTP {status}", url, status_code=status)
             return response
 
         # Should not be reachable, but keep mypy happy.
@@ -499,13 +496,21 @@ class WinbindexClient:
         if target.exists() and not overwrite:
             raise FileExistsError(target)
 
-        target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_suffix(target.suffix + ".part")
-
-        response = self._request("GET", url, stream=True)
         try:
-            total_str = response.headers.get("Content-Length")
-            total = int(total_str) if total_str is not None else None
+            # Ask for the bytes as stored: with a compressed transfer the
+            # Content-Length would not match what ends up on disk.
+            response = self._request("GET", url, stream=True, headers={"Accept-Encoding": "identity"})
+        except DownloadError as err:
+            if err.status_code == 404:
+                raise DownloadError("not available on the symbol server (HTTP 404)", url, status_code=404) from None
+            raise
+
+        logger.info("Downloading %s -> %s", url, target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(target.name + ".part")
+
+        try:
+            total = _decoded_length(response)
             downloaded = 0
             with tmp.open("wb") as fh:
                 for chunk in response.iter_content(chunk_size=chunk_size):
@@ -515,13 +520,21 @@ class WinbindexClient:
                     downloaded += len(chunk)
                     if progress is not None:
                         progress(downloaded, total)
+            if total is not None and downloaded != total:
+                raise DownloadError(f"incomplete download: got {downloaded} of {total} bytes", url)
+        except requests.RequestException as err:
+            tmp.unlink(missing_ok=True)
+            raise DownloadError(f"connection failed while downloading: {err}", url) from err
+        except BaseException:
+            # Covers DownloadError above, OSError, KeyboardInterrupt, …
+            tmp.unlink(missing_ok=True)
+            raise
         finally:
             response.close()
 
-        # Move atomically. shutil.move handles cross-device targets.
-        if target.exists() and overwrite:
-            target.unlink()
-        shutil.move(str(tmp), str(target))
+        # tmp sits next to target, so this rename is atomic (and replaces
+        # an existing file when overwrite is set).
+        tmp.replace(target)
         return target
 
     # ------------------------------------------------------------------
@@ -542,49 +555,132 @@ class WinbindexClient:
         if self.cache_ttl is not None:
             age = time.time() - path.stat().st_mtime
             if age > self.cache_ttl:
+                logger.debug("Cache file %s is stale (%.0fs old); refetching", path, age)
                 return None
         try:
             with gzip.open(path, "rb") as fh:
                 data = json.load(fh)
-        except (OSError, json.JSONDecodeError):
+        except (OSError, EOFError, ValueError):
+            # Not gzip (OSError), truncated (EOFError), not JSON / UTF-8 (ValueError).
             logger.warning("Cache file %s is corrupted; ignoring.", path)
             return None
         if not isinstance(data, dict):
             return None
+        logger.debug("Using cached metadata from %s", path)
         return data
 
     def _write_cache(self, filename: str, data: Mapping[str, Any]) -> None:
+        """Persist ``data``; failures are logged, never raised (the data was fetched fine)."""
         path = self._cache_path(filename)
         if path is None:
             return
-        tmp = path.with_suffix(path.suffix + ".part")
-        with gzip.open(tmp, "wt", encoding="utf-8") as fh:
-            json.dump(data, fh)
-        tmp.replace(path)
+        tmp: Path | None = None
+        try:
+            # A unique temp name keeps concurrent writers from clobbering each other.
+            fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.", suffix=".part")
+            tmp = Path(tmp_name)
+            with os.fdopen(fd, "wb") as raw, gzip.open(raw, "wt", encoding="utf-8") as fh:
+                json.dump(data, fh)
+            tmp.replace(path)
+        except OSError as err:
+            logger.warning("Could not write cache file %s: %s", path, err)
+            if tmp is not None:
+                tmp.unlink(missing_ok=True)
 
 
 # ----------------------------------------------------------------------
 # Module-level helpers
 # ----------------------------------------------------------------------
-_FILENAME_RE = re.compile(r"^[A-Za-z0-9._@+\-]+$")
+def filter_entries(
+    entries: Iterable[FileEntry],
+    *,
+    sha256: str | None = None,
+    version: str | None = None,
+    windows_version: str | None = None,
+    update: str | None = None,
+    machine_type: int | None = None,
+    signed: bool | None = None,
+    downloadable: bool | None = None,
+    with_pdb: bool | None = None,
+    predicate: Callable[[FileEntry], bool] | None = None,
+) -> Iterator[FileEntry]:
+    """Yield the entries that satisfy every supplied filter (logical AND).
+
+    Args:
+        entries: The entries to filter, e.g. from
+            :meth:`WinbindexClient.get_file`.
+        sha256: A full SHA256 hash or a prefix of one
+            (case-insensitive). Every entry starting with it matches.
+        version: A wildcard pattern matched against
+            :attr:`FileEntry.version`. Supports ``*`` and ``?``.
+            Example: ``"10.0.22621.*"``.
+        windows_version: Match entries that appear in this Windows
+            version (e.g. ``"11-22H2"``; case-insensitive).
+        update: Match entries that appear in this KB / update
+            identifier (e.g. ``"KB5023778"`` or ``"BASE"``;
+            case-insensitive).
+        machine_type: Filter on the PE machine type (e.g.
+            ``0x8664`` for x64, ``0x14C`` for x86, ``0xAA64`` for
+            ARM64). See :func:`~winbindex.models.parse_machine_type`.
+        signed: If ``True``, only return signed binaries.
+        downloadable: If ``True``, only return entries that have
+            enough metadata to build a binary URL.
+        with_pdb: If ``True``, only return entries that include
+            PDB metadata.
+        predicate: Optional user-supplied predicate evaluated last.
+    """
+    version_re = _wildcard_to_regex(version) if version else None
+    sha_lower = sha256.lower() if sha256 else None
+    winver_lower = windows_version.lower() if windows_version else None
+    update_lower = update.lower() if update else None
+
+    for entry in entries:
+        if sha_lower is not None and not entry.sha256.startswith(sha_lower):
+            continue
+        if version_re is not None and (entry.version is None or not version_re.match(entry.version)):
+            continue
+        if winver_lower is not None and winver_lower not in {v.lower() for v in entry.windows_versions}:
+            continue
+        if update_lower is not None and update_lower not in {u.lower() for u in entry.updates}:
+            continue
+        if machine_type is not None and entry.file_info.machine_type != machine_type:
+            continue
+        if signed is not None and entry.is_signed != signed:
+            continue
+        if downloadable is not None and entry.has_binary_download != downloadable:
+            continue
+        if with_pdb is not None and entry.has_pdb_download != with_pdb:
+            continue
+        if predicate is not None and not predicate(entry):
+            continue
+        yield entry
 
 
 def _normalize_filename(filename: str) -> str:
-    """Reject obviously-bogus filenames and normalize them.
+    """Reject bogus filenames and normalize them.
 
-    Winbindex serves filenames that may include ``.``, ``-``, ``_``,
-    ``+``, ``@`` and ``$``. Anything else is almost certainly an
-    accidental path-traversal attempt or a non-Windows-style path and
-    is rejected outright.
+    Anything that is not a valid bare Windows filename - empty,
+    containing a path separator or another reserved character
+    (``<>:"/\\|?*``), or ``.`` / ``..`` - is rejected.
     """
-    if not filename:
-        raise ValueError("filename must not be empty")
-    if "/" in filename or "\\" in filename:
-        raise ValueError(f"filename must be a bare filename, not a path: {filename!r}")
-    if not _FILENAME_RE.match(filename):
-        raise ValueError(f"Invalid characters in filename: {filename!r}")
     # Winbindex stores filenames in lower-case.
-    return filename.lower()
+    return _check_bare_filename(filename).lower()
+
+
+def _decoded_length(response: requests.Response) -> int | None:
+    """Return the size of the body as written to disk, if the server announced it.
+
+    ``Content-Length`` counts bytes on the wire. If the server applied a
+    ``Content-Encoding`` anyway (``requests`` decodes it transparently) that
+    is not the size of the file, so it is treated as unknown.
+    """
+    encoding = response.headers.get("Content-Encoding", "").strip().lower()
+    if encoding not in ("", "identity"):
+        return None
+    try:
+        return int(response.headers["Content-Length"])
+    except (KeyError, ValueError):
+        return None
 
 
 def _resolve_dest(dest: str | Path, filename: str) -> Path:

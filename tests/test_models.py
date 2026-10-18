@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from winbindex.models import PdbInfo, FileInfo, FileEntry, WindowsRelease
 from winbindex.exceptions import (
@@ -11,7 +13,7 @@ from winbindex.exceptions import (
 )
 
 # Real-world payload (trimmed) modelled after Winbindex output for ntdll.dll.
-NTDLL_PAYLOAD = {
+NTDLL_PAYLOAD: dict[str, Any] = {
     "fileInfo": {
         "description": "NT Layer DLL",
         "machineType": 34404,
@@ -130,6 +132,20 @@ class TestPdbInfo:
     def test_invalid_guid_raises(self):
         with pytest.raises(ValueError):
             PdbInfo(name="x.pdb", guid="not-a-guid", age=1)
+
+    @pytest.mark.parametrize("name", ["../../escaped.pdb", "a\\b.pdb", "..", ".", "", "c:x.pdb", "x\x00.pdb"])
+    def test_name_must_be_a_bare_filename(self, name):
+        # The name is joined onto the download directory; it must not escape it.
+        with pytest.raises(ValueError):
+            PdbInfo(name=name, guid="0" * 32, age=1)
+
+    def test_from_dict_keeps_only_the_basename(self):
+        pdb = PdbInfo.from_dict({"pdbName": "../../d:\\build\\escaped.pdb", "pdbGuid": "0" * 32, "pdbAge": 1})
+        assert pdb.name == "escaped.pdb"
+
+    def test_from_dict_unusable_name_raises_invalid_data(self):
+        with pytest.raises(InvalidDataError):
+            PdbInfo.from_dict({"pdbName": "c:\\build\\..", "pdbGuid": "0" * 32, "pdbAge": 1})
 
 
 # ---------------------------------------------------------------------- FileEntry
@@ -250,3 +266,133 @@ class TestFileEntry:
         assert len(entry.releases) == 1
         assert entry.releases[0].windows_version == "22H2"
         assert entry.releases[0].source_paths == ("foo",)
+
+
+# --------------------------------------------------------------- helpers
+
+
+class TestVersionHelpers:
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("10.0.22621.1485 (WinBuild.160101.0800)", (10, 0, 22621, 1485)),
+            ("6.1.7601.17514", (6, 1, 7601, 17514)),
+            ("garbage", ()),
+            (None, ()),
+            ("", ()),
+        ],
+    )
+    def test_parse_version(self, raw, expected):
+        from winbindex import parse_version
+
+        assert parse_version(raw) == expected
+
+    def test_version_sorting_is_numeric(self):
+        a = FileEntry.from_dict("x.dll", "a" * 64, {"fileInfo": {"version": "10.0.22621.999"}})
+        b = FileEntry.from_dict("x.dll", "b" * 64, {"fileInfo": {"version": "10.0.22621.1000"}})
+        assert sorted([a, b], key=lambda e: e.version_tuple)[-1] is b
+
+    def test_short_version(self):
+        e = FileEntry.from_dict("x.dll", "a" * 64, {"fileInfo": {"version": "10.0.1 (WinBuild.1)"}})
+        assert e.short_version == "10.0.1"
+        assert e.version == "10.0.1 (WinBuild.1)"
+
+    def test_short_version_none(self):
+        e = FileEntry.from_dict("x.dll", "a" * 64, {"fileInfo": {}})
+        assert e.short_version is None
+
+
+class TestMachineHelpers:
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [("x64", 0x8664), ("AMD64", 0x8664), ("x86", 0x14C), ("arm64", 0xAA64), ("0x8664", 0x8664), ("332", 0x14C)],
+    )
+    def test_parse_machine_type(self, raw, expected):
+        from winbindex import parse_machine_type
+
+        assert parse_machine_type(raw) == expected
+
+    def test_parse_machine_type_rejects_unknown(self):
+        from winbindex import parse_machine_type
+
+        with pytest.raises(ValueError, match="Unknown machine type"):
+            parse_machine_type("sparc")
+
+    def test_machine_name(self):
+        from winbindex import machine_name
+
+        assert machine_name(0x8664) == "x64"
+        assert machine_name(0x1234) == "0x1234"
+        assert machine_name(None) == "?"
+
+    def test_every_displayed_name_parses_back(self):
+        # Otherwise `list` shows an ARCH value that `--machine` cannot select.
+        from winbindex import MACHINE_NAMES, machine_name, parse_machine_type
+
+        for machine_type, name in MACHINE_NAMES.items():
+            assert parse_machine_type(name) == machine_type
+        assert parse_machine_type(machine_name(0x1C0)) == 0x1C0  # plain ARM: shown as hex, not "arm"
+
+    def test_entry_machine_name_and_signed(self):
+        e = FileEntry.from_dict(
+            "ntdll.dll", "abb30adf05bd71ae8283d8a44e55268de3c408421ec059c626b92b9168adc0f9", NTDLL_PAYLOAD
+        )
+        assert e.machine_name == "x64"
+        assert e.is_signed is True
+
+
+class TestReleaseDate:
+    def test_release_date_from_windows_version_info(self):
+        e = FileEntry.from_dict(
+            "ntdll.dll", "abb30adf05bd71ae8283d8a44e55268de3c408421ec059c626b92b9168adc0f9", NTDLL_PAYLOAD
+        )
+        assert e.release_date == "2023-03-21"
+
+    def test_release_date_falls_back_to_update_info(self):
+        payload = {
+            "fileInfo": {},
+            "windowsVersions": {"1809": {"KB1": {"updateInfo": {"releaseDate": "2019-01-01"}}}},
+        }
+        e = FileEntry.from_dict("x.dll", "a" * 64, payload)
+        assert e.release_date == "2019-01-01"
+
+    def test_release_date_is_earliest(self):
+        payload = {
+            "fileInfo": {},
+            "windowsVersions": {
+                "1809": {"KB1": {"windowsVersionInfo": {"releaseDate": "2020-05-05"}}},
+                "1903": {"KB2": {"windowsVersionInfo": {"releaseDate": "2019-05-05"}}},
+            },
+        }
+        e = FileEntry.from_dict("x.dll", "a" * 64, payload)
+        assert e.release_date == "2019-05-05"
+
+    def test_release_date_none(self):
+        e = FileEntry.from_dict("x.dll", "a" * 64, {"fileInfo": {}})
+        assert e.release_date is None
+
+
+class TestRobustness:
+    def test_bad_guid_in_pdb_block_is_dropped(self):
+        payload = {
+            "fileInfo": {"timestamp": 1, "virtualSize": 1},
+            "pdb": {"pdbName": "x.pdb", "pdbGuid": "not-a-guid", "pdbAge": 1},
+        }
+        entry = FileEntry.from_dict("x.dll", "a" * 64, payload)
+        assert entry.pdb is None
+
+    def test_bad_age_in_pdb_block_is_dropped(self):
+        payload = {
+            "fileInfo": {"timestamp": 1, "virtualSize": 1},
+            "pdb": {"pdbName": "x.pdb", "pdbGuid": "0" * 32, "pdbAge": "abc"},
+        }
+        entry = FileEntry.from_dict("x.dll", "a" * 64, payload)
+        assert entry.pdb is None
+
+    def test_bad_field_type_raises_invalid_data_not_validation_error(self):
+        with pytest.raises(InvalidDataError):
+            FileEntry.from_dict("x.dll", "a" * 64, {"fileInfo": {"timestamp": "nope", "virtualSize": 1}})
+
+    def test_pdbinfo_from_dict_bad_guid_raises_invalid_data(self):
+        with pytest.raises(InvalidDataError):
+            PdbInfo.from_dict({"pdbName": "x.pdb", "pdbGuid": "zz", "pdbAge": 1})
