@@ -87,6 +87,8 @@ This project follows [Semantic Versioning](https://packaging.python.org/en/lates
 | minor | new functionality (backwards-compatible) |
 | patch | bug fixes (backwards-compatible)         |
 
+Record user-visible changes in [CHANGELOG.md](CHANGELOG.md).
+
 Bump the version, commit, and tag in one command:
 
 ```bash
