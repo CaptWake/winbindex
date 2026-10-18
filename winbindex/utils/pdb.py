@@ -1,6 +1,15 @@
+"""Extract PDB (``name`` / ``guid`` / ``age``) metadata from PE files.
+
+About 80% of the entries in Winbindex carry no PDB triple. The
+recovery path is to download the binary and read the CodeView record
+out of its ``IMAGE_DEBUG_TYPE_CODEVIEW`` debug directory entry, which
+is what :func:`extract_pdb_info` does.
+"""
+
 from __future__ import annotations
 
 import struct
+import logging
 from typing import TYPE_CHECKING
 from pathlib import Path
 
@@ -13,6 +22,8 @@ if TYPE_CHECKING:
     from os import PathLike
 
 __all__ = ["extract_pdb_info", "extract_pdb_info_from_bytes"]
+
+logger = logging.getLogger(__name__)
 
 # IMAGE_DEBUG_TYPE_CODEVIEW
 _IMAGE_DEBUG_TYPE_CODEVIEW = 2
@@ -32,10 +43,10 @@ def extract_pdb_info(path: str | PathLike[str]) -> PdbInfo:
         A populated :class:`~winbindex.models.PdbInfo`.
 
     Raises:
-        PefileNotInstalledError: If ``pefile`` is not installed.
         FileNotFoundError: If ``path`` does not exist.
         MissingPdbInfoError: If the PE file has no usable
             ``IMAGE_DEBUG_TYPE_CODEVIEW`` debug directory entry.
+        pefile.PEFormatError: If ``path`` is not a PE file.
     """
     p = Path(path)
     if not p.is_file():
@@ -53,14 +64,12 @@ def extract_pdb_info_from_bytes(data: bytes) -> PdbInfo:
         A populated :class:`~winbindex.models.PdbInfo`.
 
     Raises:
-        PefileNotInstalledError: If ``pefile`` is not installed.
         MissingPdbInfoError: If the PE has no usable CodeView record.
+        pefile.PEFormatError: If ``data`` is not a PE image.
     """
     pe = pefile.PE(data=data, fast_load=True)
     try:
-        pe.parse_data_directories(
-            directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_DEBUG"]]
-        )
+        pe.parse_data_directories(directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_DEBUG"]])
         debug_entries = getattr(pe, "DIRECTORY_ENTRY_DEBUG", None) or []
         for entry in debug_entries:
             if entry.struct.Type != _IMAGE_DEBUG_TYPE_CODEVIEW:
@@ -72,7 +81,7 @@ def extract_pdb_info_from_bytes(data: bytes) -> PdbInfo:
     finally:
         pe.close()
 
-    raise MissingPdbInfoError("PE file has no IMAGE_DEBUG_TYPE_CODEVIEW record with PDB info.")
+    raise MissingPdbInfoError("PE file has no RSDS (PDB 7.0) CodeView debug record with PDB info.")
 
 
 def _parse_codeview(data: bytes) -> PdbInfo | None:  # noqa: PLR0911
@@ -94,21 +103,19 @@ def _parse_codeview(data: bytes) -> PdbInfo | None:  # noqa: PLR0911
         name = _extract_pdb_name(data[24:])
         if name is None:
             return None
-        return PdbInfo(name=name, guid=guid, age=age)
+        try:
+            return PdbInfo(name=name, guid=guid, age=age)
+        except ValueError:  # e.g. a path ending in "\..", or reserved characters
+            logger.debug("Skipping CodeView record with unusable PDB name %r", name)
+            return None
 
     if magic == _NB10_MAGIC:
-        # struct: 4s magic, I offset, I signature, I age, then NUL-terminated path.
-        # PDB 2.0 uses a 32-bit signature instead of a GUID; we expand
-        # it to a 32-character hex string so the symbol-server URL
-        # builder still works.
-        if len(data) < 16:
-            return None
-        _, signature, age = struct.unpack_from("<III", data, 4)
-        guid = f"{signature:08X}".ljust(32, "0")
-        name = _extract_pdb_name(data[16:])
-        if name is None:
-            return None
-        return PdbInfo(name=name, guid=guid, age=age)
+        # PDB 2.0 records carry a 32-bit signature instead of a GUID and are
+        # indexed by the symbol server as ``<signature %08X><age %X>``, which
+        # the GUID-based URL builder cannot express. No Windows binary built
+        # this century uses them, so skip rather than fabricate a wrong URL.
+        logger.debug("Skipping NB10 (PDB 2.0) CodeView record; only RSDS is supported")
+        return None
 
     return None
 
