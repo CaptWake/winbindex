@@ -6,14 +6,16 @@ Two strategies are demonstrated:
    :meth:`WinbindexClient.download_pdb` directly with the entry.
 2. PDB metadata is missing from the index — download the binary first,
    then read the PDB triple from the PE's debug directory using
-   :func:`winbindex.extract_pdb_info` (requires the ``pdb`` extra).
+   :func:`winbindex.extract_pdb_info`.
+
+The ``winbindex download --pdb`` CLI command does exactly this.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from winbindex import WinbindexClient
+from winbindex import WinbindexClient, extract_pdb_info
 
 
 def main() -> None:
@@ -33,8 +35,8 @@ def main() -> None:
         if not entries:
             print("No matching entries.")
             return
-        entries.sort(key=lambda e: e.version or "", reverse=True)
-        entry = entries[0]
+        # Compare versions numerically: "10.0.22621.1000" > "10.0.22621.999".
+        entry = max(entries, key=lambda e: e.version_tuple)
         print(f"Selected {entry.version} (sha256={entry.sha256[:12]}...)")
 
         # 1. Download the binary.
@@ -48,16 +50,8 @@ def main() -> None:
             return
 
         # 2b. Fallback: parse the PE's debug directory.
-        try:
-            from winbindex import extract_pdb_info
-        except ImportError:
-            print("Install with `pip install winbindex[pdb]` to extract PDB info.")
-            return
-
         pdb_info = extract_pdb_info(binary_path)
-        print(
-            f"  pdb info from binary: name={pdb_info.name} guid={pdb_info.guid} age={pdb_info.age}"
-        )
+        print(f"  pdb info from binary: name={pdb_info.name} guid={pdb_info.guid} age={pdb_info.age}")
         pdb_path = client.download_pdb(pdb_info, dest, overwrite=True)
         print(f"  pdb    -> {pdb_path}")
 
