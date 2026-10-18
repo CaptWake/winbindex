@@ -23,6 +23,7 @@ DEFAULT_SYMBOL_SERVER_URL = "https://msdl.microsoft.com/download/symbols"
 
 _GUID_RE = re.compile(r"^[0-9a-fA-F]{32}$")
 
+
 def normalize_guid(guid: str) -> str:
     """Return ``guid`` as a 32-character uppercase hex string.
 

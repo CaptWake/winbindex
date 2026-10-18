@@ -15,21 +15,13 @@ from winbindex.symbol_server import (
 
 class TestNormalizeGuid:
     def test_dashed_guid(self):
-        assert (
-            normalize_guid("1B72224D-37B8-1792-2820-0ED8994498B2")
-            == "1B72224D37B8179228200ED8994498B2"
-        )
+        assert normalize_guid("1B72224D-37B8-1792-2820-0ED8994498B2") == "1B72224D37B8179228200ED8994498B2"
 
     def test_undashed_guid(self):
-        assert (
-            normalize_guid("1b72224d37b8179228200ed8994498b2") == "1B72224D37B8179228200ED8994498B2"
-        )
+        assert normalize_guid("1b72224d37b8179228200ed8994498b2") == "1B72224D37B8179228200ED8994498B2"
 
     def test_lowercase_dashed(self):
-        assert (
-            normalize_guid("1b72224d-37b8-1792-2820-0ed8994498b2")
-            == "1B72224D37B8179228200ED8994498B2"
-        )
+        assert normalize_guid("1b72224d-37b8-1792-2820-0ed8994498b2") == "1B72224D37B8179228200ED8994498B2"
 
     @pytest.mark.parametrize(
         "bad",
@@ -59,17 +51,12 @@ class TestBuildBinaryUrl:
     def test_p2pgraph_example(self):
         # timestamp=2538600830 (0x974FF97E), virtualSize=380928 (0x5d000)
         url = build_binary_url("p2pgraph.dll", 2538600830, 380928)
-        assert (
-            url
-            == "https://msdl.microsoft.com/download/symbols/p2pgraph.dll/974FF97E5d000/p2pgraph.dll"
-        )
+        assert url == "https://msdl.microsoft.com/download/symbols/p2pgraph.dll/974FF97E5d000/p2pgraph.dll"
 
     def test_ntdll_example(self):
         # ntdll.dll, timestamp=0xB7E2D60A (3085096458), virtualSize=0x213000 (2174976)
         url = build_binary_url("ntdll.dll", 0xB7E2D60A, 0x213000)
-        assert (
-            url == "https://msdl.microsoft.com/download/symbols/ntdll.dll/B7E2D60A213000/ntdll.dll"
-        )
+        assert url == "https://msdl.microsoft.com/download/symbols/ntdll.dll/B7E2D60A213000/ntdll.dll"
 
     def test_uses_default_base_url(self):
         url = build_binary_url("foo.dll", 1, 1)
