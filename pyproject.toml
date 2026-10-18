@@ -1,6 +1,6 @@
 [project]
 name = "winbindex"
-version = "1.0.1"
+version = "2.0.0"
 description = "A python module for the Winbindex service to download Windows binaries and PDB files."
 readme = "README.md"
 requires-python = ">=3.10"
