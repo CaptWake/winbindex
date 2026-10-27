@@ -717,7 +717,11 @@ def _differs_from(path: Path, entry: FileEntry) -> str | None:
     except Exception:  # pefile.PEFormatError, or anything else a non-PE file triggers
         return "not a PE file"
     try:
-        found = (pe.FILE_HEADER.TimeDateStamp, pe.OPTIONAL_HEADER.SizeOfImage)
+        # pefile declares these headers optional and fills their fields in at runtime.
+        found = (
+            getattr(pe.FILE_HEADER, "TimeDateStamp", None),
+            getattr(pe.OPTIONAL_HEADER, "SizeOfImage", None),
+        )
     finally:
         pe.close()
     if found != (entry.file_info.timestamp, entry.file_info.virtual_size):
