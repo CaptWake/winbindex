@@ -37,7 +37,7 @@ def extract_pdb_info(path: str | PathLike[str]) -> PdbInfo:
     """Extract PDB metadata from a PE file on disk.
 
     Args:
-        path: Path to a PE file (``.exe`` / ``.dll`` / ``.sys`` / …).
+        path: Path to a PE file (``.exe`` / ``.dll`` / ``.sys`` / ...).
 
     Returns:
         A populated :class:`~winbindex.models.PdbInfo`.

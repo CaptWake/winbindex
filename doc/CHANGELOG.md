@@ -38,7 +38,7 @@ All notable changes to this project are listed here. Versions follow
 - `--json` for every command.
 - `--latest` (newest build per architecture), `--limit`,
   `--sort version|date|size|sha|none` and `--reverse`.
-- `--machine` accepts names (`x64`, `x86`, `arm64`, `arm`, …) as well as
+- `--machine` accepts names (`x64`, `x86`, `arm64`, `arm`, ...) as well as
   numbers, and `--sha256` accepts a prefix (`url` and `download` warn when
   it matches more than one entry).
 - Hints when nothing matches: close values for typos, the available

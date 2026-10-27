@@ -180,7 +180,7 @@ class WinbindexClient:
 
         Raises:
             InvalidFilenameError: If ``filename`` is not a plausible
-                Windows filename (empty, contains a path separator, …).
+                Windows filename (empty, contains a path separator, ...).
             FileNotIndexedError: If the server returns ``404``.
             DownloadError: For any other HTTP / network failure.
             InvalidDataError: If the response is not valid gzipped JSON.
@@ -526,7 +526,7 @@ class WinbindexClient:
             tmp.unlink(missing_ok=True)
             raise DownloadError(f"connection failed while downloading: {err}", url) from err
         except BaseException:
-            # Covers DownloadError above, OSError, KeyboardInterrupt, …
+            # Covers DownloadError above, OSError, KeyboardInterrupt, ...
             tmp.unlink(missing_ok=True)
             raise
         finally:

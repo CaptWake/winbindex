@@ -1,7 +1,7 @@
 """Microsoft Public Symbol Server URL helpers.
 
 The Microsoft public symbol server (``https://msdl.microsoft.com``)
-hosts both Windows PE binaries (``.exe``, ``.dll``, ``.sys`` …) and
+hosts both Windows PE binaries (``.exe``, ``.dll``, ``.sys`` ...) and
 their associated ``.pdb`` symbol files. Files are indexed by a path
 of the form::
 

@@ -33,7 +33,7 @@ class DownloadError(WinbindexError):
         message: The failure description without the URL.
         url: The URL that was being fetched at the time of the failure.
         status_code: The HTTP status code, or ``None`` for network-level
-            failures (timeouts, connection resets, …).
+            failures (timeouts, connection resets, ...).
     """
 
     def __init__(self, message: str, url: str, *, status_code: int | None = None) -> None:

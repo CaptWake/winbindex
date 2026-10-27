@@ -80,7 +80,7 @@ _MACHINE_ALIASES: dict[str, int] = {
 
 
 def machine_name(machine_type: int | None) -> str:
-    """Return a short architecture name (``x64``, ``x86``, ``arm64`` …) for a PE machine type.
+    """Return a short architecture name (``x64``, ``x86``, ``arm64`` ...) for a PE machine type.
 
     Unknown values are rendered as hex; ``None`` becomes ``"?"``.
     """
@@ -90,7 +90,7 @@ def machine_name(machine_type: int | None) -> str:
 
 
 def parse_machine_type(value: str | int) -> int:
-    """Parse a PE machine type from a name (``x64``, ``amd64``, ``arm64`` …) or a number.
+    """Parse a PE machine type from a name (``x64``, ``amd64``, ``arm64`` ...) or a number.
 
     Numbers may be decimal or ``0x``-prefixed hex.
 
@@ -190,7 +190,7 @@ class FileInfo(BaseModel):
 
     @property
     def machine_name(self) -> str:
-        """Short architecture name for :attr:`machine_type` (``x64``, ``x86`` …)."""
+        """Short architecture name for :attr:`machine_type` (``x64``, ``x86`` ...)."""
         return machine_name(self.machine_type)
 
     @property
@@ -288,7 +288,7 @@ class FileEntry(BaseModel):
 
     @property
     def machine_name(self) -> str:
-        """Short architecture name (``x64``, ``x86``, ``arm64`` …)."""
+        """Short architecture name (``x64``, ``x86``, ``arm64`` ...)."""
         return self.file_info.machine_name
 
     @property
@@ -326,7 +326,7 @@ class FileEntry(BaseModel):
         if timestamp is None or virtual_size is None:
             raise MissingDownloadInfoError(
                 f"Cannot build binary URL for {self.filename!r} "
-                f"(sha256={self.sha256[:12]}…): missing timestamp or virtualSize."
+                f"(sha256={self.sha256[:12]}...): missing timestamp or virtualSize."
             )
 
         kwargs: dict[str, Any] = {}
@@ -337,7 +337,7 @@ class FileEntry(BaseModel):
 
     def pdb_url(self, *, base_url: str | None = None) -> str:
         if self.pdb is None:
-            raise MissingPdbInfoError(f"No PDB metadata for {self.filename!r} (sha256={self.sha256[:12]}…).")
+            raise MissingPdbInfoError(f"No PDB metadata for {self.filename!r} (sha256={self.sha256[:12]}...).")
 
         kwargs: dict[str, Any] = {}
         if base_url is not None:

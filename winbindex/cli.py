@@ -7,7 +7,7 @@ Subcommands:
 * ``url``       - print the binary / PDB URL for matching entries
 * ``download``  - download binaries (and optionally PDBs) matching a query
 
-Global options (cache, timeouts, ``--json``, ``-v`` …) are accepted both
+Global options (cache, timeouts, ``--json``, ``-v`` ...) are accepted both
 before and after the subcommand. Exit status: ``0`` on success, ``1``
 when nothing matched or some items failed, ``2`` on usage or fatal
 errors, ``130`` when interrupted.
@@ -74,7 +74,9 @@ def _human_size(n: int | None) -> str:
 def _truncate(text: str, width: int) -> str:
     if width <= 0 or len(text) <= width:
         return text
-    return text[: width - 1] + "…"
+    if width <= 3:
+        return text[:width]
+    return text[: width - 3] + "..."
 
 
 def _plural(n: int, singular: str, plural: str | None = None) -> str:
@@ -269,7 +271,7 @@ def _hints_for_empty_match(filename: str, entries: list[FileEntry], args: argpar
             msg += f"; did you mean {', '.join(repr(by_lower[c]) for c in close)}?"
         else:
             shown = sorted(known)[:12]
-            more = f", … ({len(known) - len(shown)} more)" if len(known) > len(shown) else ""
+            more = f", ... ({len(known) - len(shown)} more)" if len(known) > len(shown) else ""
             msg += f"; known values: {', '.join(shown)}{more}"
         hints.append(msg)
 
@@ -428,9 +430,9 @@ def _print_info(info: dict[str, Any]) -> None:
     )
     row("architectures", " · ".join(f"{k} {v}" for k, v in info["architectures"].items()) or "-")
     if info["oldestVersion"]:
-        row("file versions", f"{info['oldestVersion']} … {info['newestVersion']}")
+        row("file versions", f"{info['oldestVersion']} ... {info['newestVersion']}")
     if info["firstRelease"]:
-        row("release dates", f"{info['firstRelease']} … {info['lastRelease']}")
+        row("release dates", f"{info['firstRelease']} ... {info['lastRelease']}")
     if info["latestPerArch"]:
         lines = [
             f"{la['machine']:<6} {la['version'] or '?':<18} {la['releaseDate'] or '?':<11} sha256 {la['sha256'][:16]}"
@@ -777,7 +779,7 @@ def _download_one(
             result.pdb_status = "unavailable"
             result.pdb_error = "no PDB record in binary"
             return result
-        except Exception as err:  # pefile.PEFormatError, OSError, …
+        except Exception as err:  # pefile.PEFormatError, OSError, ...
             result.pdb_status = "failed"
             result.pdb_error = f"could not parse binary: {_short_error(err)}"
             return result

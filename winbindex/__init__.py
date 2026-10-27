@@ -1,6 +1,6 @@
 """Python client for the `Winbindex <https://winbindex.m417z.com/>`_ service.
 
-Winbindex is an index of Windows binaries (``.exe``, ``.dll``, ``.sys`` …)
+Winbindex is an index of Windows binaries (``.exe``, ``.dll``, ``.sys`` ...)
 that exposes the metadata required to download them — and their
 associated PDB symbol files — straight from the Microsoft public symbol
 server (``https://msdl.microsoft.com``).

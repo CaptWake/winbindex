@@ -339,6 +339,13 @@ class TestList:
         expected = ["a" * 64, "c" * 64] if reverse else ["c" * 64, "a" * 64]
         assert out.split() == [*expected, "b" * 64]
 
+    @pytest.mark.parametrize("width", [1, 3, 4, 28])
+    def test_truncated_cells_never_exceed_their_width(self, width):
+        from winbindex.cli import _truncate
+
+        assert len(_truncate("x" * 50, width)) == width
+        assert _truncate("short", 28) == "short"
+
     def test_windows_version_case_insensitive(self, rsps, run):
         code, out, _ = run("list", "kernel32.dll", "-q", "--windows-version", "11-23h2")
         assert out.split() == [SHA_C]
@@ -612,8 +619,8 @@ class TestInfo:
         assert "description       Windows NT BASE API Client DLL" in out
         assert "3 (2 downloadable · 1 with PDB metadata · 2 signed)" in out
         assert "x64 2 · x86 1" in out
-        assert "10.0.19041.1 … 11.0.22000.42" in out
-        assert "2018-10-09 … 2023-10-31" in out
+        assert "10.0.19041.1 ... 11.0.22000.42" in out
+        assert "2018-10-09 ... 2023-10-31" in out
         assert "11-22H2" in out and "KB" not in out.split("windows versions")[0]
 
     def test_json(self, rsps, run):

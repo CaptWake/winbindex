@@ -95,8 +95,8 @@ ntoskrnl.exe
   description       NT Kernel & System
   entries           1143 (1141 downloadable · 0 with PDB metadata · 1018 signed)
   architectures     x64 1142 · ? 1
-  file versions     10.0.10240.16384 … 10.0.28000.2952
-  release dates     2015-07-29 … 2026-09-14
+  file versions     10.0.10240.16384 ... 10.0.28000.2952
+  release dates     2015-07-29 ... 2026-09-14
   latest per arch   x64    10.0.28000.2952    2026-09-08  sha256 6ea54ed50bbac50f
   windows versions
     VERSION  ENTRIES  UPDATES  FIRST       LAST
