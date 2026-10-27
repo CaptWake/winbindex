@@ -3,6 +3,27 @@
 All notable changes to this project are listed here. Versions follow
 [Semantic Versioning](https://semver.org/).
 
+## 3.0.0 - 2026-10-27
+
+### Breaking changes
+
+- CLI: the `--with-pdb` filter and `url --pdb` are removed. The index
+  rarely has PDB details, so the CLI no longer uses them anywhere:
+  `download --pdb` always reads the PDB location from the downloaded
+  binary, `info` and `list` no longer count "with PDB metadata", the
+  `list` DOWNLOAD column shows only `bin`, and `list --json` drops the
+  `pdb` and `pdbUrl` fields.
+- The `with_pdb` filter of `find()` and `filter_entries()` is removed.
+  Use `predicate=lambda e: e.has_pdb_download` instead (or
+  `not e.has_pdb_download` for `with_pdb=False`). `FileEntry.pdb`,
+  `has_pdb_download` and `download_pdb()` are unchanged.
+- `examples/bulk_download.py`: `--with-pdb` is now `--pdb`.
+
+### Changed
+
+- CLI output uses ASCII `...` instead of `…` for ranges and cut-off
+  text.
+
 ## 2.0.0 - 2026-10-18
 
 ### Breaking changes
