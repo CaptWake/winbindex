@@ -266,7 +266,6 @@ class WinbindexClient:
         machine_type: int | None = None,
         signed: bool | None = None,
         downloadable: bool | None = None,
-        with_pdb: bool | None = None,
         predicate: Callable[[FileEntry], bool] | None = None,
     ) -> Iterator[FileEntry]:
         """Iterate over entries matching a set of filter criteria.
@@ -291,7 +290,6 @@ class WinbindexClient:
             machine_type=machine_type,
             signed=signed,
             downloadable=downloadable,
-            with_pdb=with_pdb,
             predicate=predicate,
         )
 
@@ -601,7 +599,6 @@ def filter_entries(
     machine_type: int | None = None,
     signed: bool | None = None,
     downloadable: bool | None = None,
-    with_pdb: bool | None = None,
     predicate: Callable[[FileEntry], bool] | None = None,
 ) -> Iterator[FileEntry]:
     """Yield the entries that satisfy every supplied filter (logical AND).
@@ -625,9 +622,10 @@ def filter_entries(
         signed: If ``True``, only return signed binaries.
         downloadable: If ``True``, only return entries that have
             enough metadata to build a binary URL.
-        with_pdb: If ``True``, only return entries that include
-            PDB metadata.
-        predicate: Optional user-supplied predicate evaluated last.
+        predicate: Optional user-supplied predicate evaluated last,
+            for anything the filters above do not cover. For example,
+            ``lambda e: e.has_pdb_download`` keeps the entries whose PDB
+            triple is in the index.
     """
     version_re = _wildcard_to_regex(version) if version else None
     sha_lower = sha256.lower() if sha256 else None
@@ -648,8 +646,6 @@ def filter_entries(
         if signed is not None and entry.is_signed != signed:
             continue
         if downloadable is not None and entry.has_binary_download != downloadable:
-            continue
-        if with_pdb is not None and entry.has_pdb_download != with_pdb:
             continue
         if predicate is not None and not predicate(entry):
             continue

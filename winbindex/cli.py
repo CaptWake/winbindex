@@ -4,8 +4,9 @@ Subcommands:
 
 * ``info``      - summarise what the index knows about a file
 * ``list``      - print matching versions of a file as a table
-* ``url``       - print the binary / PDB URL for matching entries
-* ``download``  - download binaries (and optionally PDBs) matching a query
+* ``url``       - print the binary URL for matching entries
+* ``download``  - download binaries (and optionally their PDBs, found by parsing
+  each downloaded binary) matching a query
 
 Global options (cache, timeouts, ``--json``, ``-v`` ...) are accepted both
 before and after the subcommand. Exit status: ``0`` on success, ``1``
@@ -32,7 +33,7 @@ from collections.abc import Callable, Iterable, Sequence
 import pefile
 
 from .client import WinbindexClient, filter_entries, default_cache_dir
-from .models import _INVALID_FILENAME_CHARS, PdbInfo, FileEntry, machine_name, parse_machine_type
+from .models import _INVALID_FILENAME_CHARS, FileEntry, machine_name, parse_machine_type
 from .version import __version__
 from .utils.pdb import extract_pdb_info
 from .exceptions import (
@@ -118,12 +119,7 @@ def _signed_label(entry: FileEntry) -> str:
 
 
 def _download_label(entry: FileEntry) -> str:
-    parts = []
-    if entry.has_binary_download:
-        parts.append("bin")
-    if entry.has_pdb_download:
-        parts.append("pdb")
-    return "+".join(parts) or "-"
+    return "bin" if entry.has_binary_download else "-"
 
 
 def _entry_to_dict(entry: FileEntry, client: WinbindexClient) -> dict[str, Any]:
@@ -158,9 +154,7 @@ def _entry_to_dict(entry: FileEntry, client: WinbindexClient) -> dict[str, Any]:
             }
             for r in entry.releases
         ],
-        "pdb": ({"name": entry.pdb.name, "guid": entry.pdb.guid, "age": entry.pdb.age} if entry.pdb else None),
         "binaryUrl": entry.binary_url(base_url=client.symbol_server_url) if entry.has_binary_download else None,
-        "pdbUrl": entry.pdb_url(base_url=client.symbol_server_url) if entry.has_pdb_download else None,
     }
 
 
@@ -202,7 +196,6 @@ def _filter_kwargs(args: argparse.Namespace) -> dict[str, Any]:
         "machine_type": args.machine,
         "signed": args.signed,
         "downloadable": args.downloadable,
-        "with_pdb": args.with_pdb,
     }
 
 
@@ -290,11 +283,6 @@ def _hints_for_empty_match(filename: str, entries: list[FileEntry], args: argpar
         hints.append(
             f"the other filters match {_plural(n, 'entry', 'entries')} of {filename}, but without download "
             "metadata (the index lacks the PE timestamp and image size)"
-        )
-    if args.with_pdb and (n := matches_without("with_pdb")):
-        hints.append(
-            f"the other filters match {_plural(n, 'entry', 'entries')} of {filename}, but without PDB metadata "
-            "in the index; `download --pdb` can extract it from the binary"
         )
     return hints
 
@@ -394,7 +382,6 @@ def _info_for(filename: str, entries: list[FileEntry]) -> dict[str, Any]:
         "filename": filename,
         "entries": len(entries),
         "downloadable": sum(e.has_binary_download for e in entries),
-        "withPdb": sum(e.has_pdb_download for e in entries),
         "signed": sum(e.is_signed for e in entries),
         "architectures": dict(arch_counts.most_common()),
         "description": descriptions.most_common(1)[0][0] if descriptions else None,
@@ -425,8 +412,7 @@ def _print_info(info: dict[str, Any]) -> None:
         row("description", info["description"])
     row(
         "entries",
-        f"{info['entries']} ({info['downloadable']} downloadable · "
-        f"{info['withPdb']} with PDB metadata · {info['signed']} signed)",
+        f"{info['entries']} ({info['downloadable']} downloadable · {info['signed']} signed)",
     )
     row("architectures", " · ".join(f"{k} {v}" for k, v in info["architectures"].items()) or "-")
     if info["oldestVersion"]:
@@ -535,8 +521,7 @@ def cmd_list(client: WinbindexClient, args: argparse.Namespace) -> int:
     matching = _plural(sel.matched, "matching entry", "matching entries")
     summary = matching if shown == sel.matched else f"showing {shown} of {matching}"
     downloadable = sum(e.has_binary_download for e in sel.entries)
-    with_pdb = sum(e.has_pdb_download for e in sel.entries)
-    _note(f"{summary} ({downloadable} downloadable, {with_pdb} with PDB metadata)")
+    _note(f"{summary} ({downloadable} downloadable)")
     return EXIT_NO_MATCH if sel.missing else EXIT_OK
 
 
@@ -545,7 +530,7 @@ def cmd_list(client: WinbindexClient, args: argparse.Namespace) -> int:
 # ======================================================================
 def cmd_url(client: WinbindexClient, args: argparse.Namespace) -> int:
     """Implement the ``url`` subcommand."""
-    if args.downloadable is None and not args.pdb:
+    if args.downloadable is None:
         # As in `download`: --latest / --limit must choose among entries that have a URL.
         args.downloadable = True
     sel = _select(client, args)
@@ -556,16 +541,10 @@ def cmd_url(client: WinbindexClient, args: argparse.Namespace) -> int:
     printed: list[dict[str, Any]] = []
     skipped = 0
     for e in sel.entries:
-        if args.pdb:
-            if not e.has_pdb_download:
-                skipped += 1
-                continue
-            url = e.pdb_url(base_url=client.symbol_server_url)
-        else:
-            if not e.has_binary_download:
-                skipped += 1
-                continue
-            url = e.binary_url(base_url=client.symbol_server_url)
+        if not e.has_binary_download:  # only with --no-downloadable
+            skipped += 1
+            continue
+        url = e.binary_url(base_url=client.symbol_server_url)
         printed.append(
             {
                 "filename": e.filename,
@@ -583,9 +562,7 @@ def cmd_url(client: WinbindexClient, args: argparse.Namespace) -> int:
             print(item["url"])
 
     if skipped:
-        what = "PDB metadata" if args.pdb else "download metadata"
-        extra = " (`download --pdb` can extract it from the binaries)" if args.pdb else ""
-        _note(f"skipped {_plural(skipped, 'entry', 'entries')} without {what}{extra}")
+        _note(f"skipped {_plural(skipped, 'entry', 'entries')} without download metadata")
     if not printed:
         return EXIT_NO_MATCH
     return EXIT_NO_MATCH if sel.missing else EXIT_OK
@@ -770,23 +747,21 @@ def _download_one(
     if not args.pdb:
         return result
 
-    # ---- PDB: from the index if present, else extracted from the binary.
-    pdb_info: PdbInfo | None = entry.pdb
-    if pdb_info is None:
-        if result.status == "failed":
-            result.pdb_status = "unavailable"
-            result.pdb_error = "binary not downloaded"
-            return result
-        try:
-            pdb_info = extract_pdb_info(target)
-        except MissingPdbInfoError:
-            result.pdb_status = "unavailable"
-            result.pdb_error = "no PDB record in binary"
-            return result
-        except Exception as err:  # pefile.PEFormatError, OSError, ...
-            result.pdb_status = "failed"
-            result.pdb_error = f"could not parse binary: {_short_error(err)}"
-            return result
+    # ---- PDB: always read from the binary's debug directory; the index rarely has it.
+    if result.status == "failed":
+        result.pdb_status = "unavailable"
+        result.pdb_error = "binary not downloaded"
+        return result
+    try:
+        pdb_info = extract_pdb_info(target)
+    except MissingPdbInfoError:
+        result.pdb_status = "unavailable"
+        result.pdb_error = "no PDB record in binary"
+        return result
+    except Exception as err:  # pefile.PEFormatError, OSError, ...
+        result.pdb_status = "failed"
+        result.pdb_error = f"could not parse binary: {_short_error(err)}"
+        return result
 
     pdb_target = target_dir / pdb_info.name
     result.pdb_path = pdb_target
@@ -915,11 +890,8 @@ def _dry_run(
             print(f"{label(i, e)}  {_human_size(r.bytes):>9}  exists (would skip)  {path}")
         else:
             print(f"{label(i, e)}  would FAIL: {r.error}")
-        if args.pdb:
-            if e.pdb is not None:
-                print(f"{pad} + {e.pdb.name}  {e.pdb_url(base_url=client.symbol_server_url)}")
-            else:
-                print(f"{pad} + pdb: not in the index; read from the binary after download")
+        if args.pdb and r.status != "failed":
+            print(f"{pad} + pdb: read from the binary after download")
 
     todo = [r for r in results if r.status == "dry-run"]
     present = sum(r.status == "exists" for r in results)
@@ -1094,12 +1066,6 @@ def _add_filter_args(parser: argparse.ArgumentParser, *, selection: bool = True)
         default=None,
         help="Only entries with enough metadata to build a binary URL.",
     )
-    f.add_argument(
-        "--with-pdb",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="Only entries whose PDB triple is in the index.",
-    )
     if not selection:
         return
     s = parser.add_argument_group("selection")
@@ -1165,10 +1131,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_url = sub.add_parser(
         "url",
         help="Print symbol-server URLs for matching entries.",
-        description="Print the symbol-server URL of each matching entry, one per line.",
+        description="Print the symbol-server URL of each matching binary, one per line. "
+        "PDB locations are only known after downloading a binary: use `download --pdb`.",
     )
     _add_filter_args(p_url)
-    p_url.add_argument("--pdb", action="store_true", help="Print the PDB URL instead of the binary URL.")
     _add_global_args(p_url, on_subcommand=True)
     p_url.set_defaults(func=cmd_url)
 
@@ -1191,7 +1157,7 @@ def build_parser() -> argparse.ArgumentParser:
     o.add_argument(
         "--pdb",
         action="store_true",
-        help="Also fetch the PDB; when the index has no PDB info it is extracted from the downloaded binary.",
+        help="Also fetch each binary's PDB, located by parsing the downloaded binary's debug directory.",
     )
     o.add_argument("--overwrite", action="store_true", help="Replace files that already exist.")
     o.add_argument("--dry-run", action="store_true", help="Show what would be downloaded and where.")

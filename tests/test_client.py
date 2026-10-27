@@ -17,6 +17,7 @@ from winbindex import (
     InvalidDataError,
     FileNotIndexedError,
 )
+from winbindex.models import FileEntry
 
 SAMPLE_KERNEL32 = {
     "0000000000000000000000000000000000000000000000000000000000000001": {
@@ -64,6 +65,10 @@ SAMPLE_KERNEL32 = {
         # No pdb info.
     },
 }
+
+
+def _has_pdb(entry: FileEntry) -> bool:
+    return entry.has_pdb_download
 
 
 def _gzipped(data: dict) -> bytes:
@@ -195,10 +200,21 @@ class TestFind:
             results = list(client.find("kernel32.dll", downloadable=True))
         assert len(results) == 2
 
-    def test_filter_with_pdb(self, mocked_kernel32):
+    def test_predicate_selects_entries_with_pdb_details(self, mocked_kernel32):
         with WinbindexClient() as client:
-            results = list(client.find("kernel32.dll", with_pdb=True))
-        assert len(results) == 1
+            results = list(client.find("kernel32.dll", predicate=_has_pdb))
+            without = list(client.find("kernel32.dll", predicate=lambda e: not e.has_pdb_download))
+        assert [e.pdb.name for e in results if e.pdb] == ["kernel32.pdb"]
+        assert len(without) == 2
+
+    def test_with_pdb_filter_is_gone(self):
+        # Rejected at call time, before any request is made.
+        from winbindex import filter_entries
+
+        with WinbindexClient() as client, pytest.raises(TypeError):
+            list(client.find("kernel32.dll", with_pdb=True))  # type: ignore[call-arg]
+        with pytest.raises(TypeError):
+            list(filter_entries([], with_pdb=True))  # type: ignore[call-arg]
 
     def test_filter_by_sha256_case_insensitive(self, mocked_kernel32):
         with WinbindexClient() as client:
@@ -238,7 +254,7 @@ class TestDownloadBinary:
         mocked_kernel32.add(responses.GET, bin_url, body=b"PE\x00\x00fake-binary", status=200)
 
         with WinbindexClient() as client:
-            entry = next(client.find("kernel32.dll", with_pdb=True))
+            entry = next(client.find("kernel32.dll", predicate=_has_pdb))
             path = client.download_binary(entry, tmp_path)
         assert path == tmp_path / "kernel32.dll"
         assert path.read_bytes() == b"PE\x00\x00fake-binary"
@@ -247,7 +263,7 @@ class TestDownloadBinary:
         target = tmp_path / "kernel32.dll"
         target.write_bytes(b"existing")
         with WinbindexClient() as client:
-            entry = next(client.find("kernel32.dll", with_pdb=True))
+            entry = next(client.find("kernel32.dll", predicate=_has_pdb))
             with pytest.raises(FileExistsError):
                 client.download_binary(entry, target)
 
@@ -258,7 +274,7 @@ class TestDownloadBinary:
         target = tmp_path / "kernel32.dll"
         target.write_bytes(b"existing")
         with WinbindexClient() as client:
-            entry = next(client.find("kernel32.dll", with_pdb=True))
+            entry = next(client.find("kernel32.dll", predicate=_has_pdb))
             client.download_binary(entry, target, overwrite=True)
         assert target.read_bytes() == b"new content"
 
@@ -274,7 +290,7 @@ class TestDownloadBinary:
 
         progress_calls: list[tuple[int, int | None]] = []
         with WinbindexClient() as client:
-            entry = next(client.find("kernel32.dll", with_pdb=True))
+            entry = next(client.find("kernel32.dll", predicate=_has_pdb))
             client.download_binary(
                 entry,
                 tmp_path,
@@ -292,7 +308,7 @@ class TestDownloadPdb:
         mocked_kernel32.add(responses.GET, pdb_url, body=b"PDB-content", status=200)
 
         with WinbindexClient() as client:
-            entry = next(client.find("kernel32.dll", with_pdb=True))
+            entry = next(client.find("kernel32.dll", predicate=_has_pdb))
             path = client.download_pdb(entry, tmp_path)
         assert path == tmp_path / "kernel32.pdb"
         assert path.read_bytes() == b"PDB-content"
@@ -478,7 +494,7 @@ class TestDownloadFailures:
         bin_url = f"{DEFAULT_SYMBOL_SERVER_URL}/kernel32.dll/DEADBEEF1000/kernel32.dll"
         mocked_kernel32.add(responses.GET, bin_url, status=404)
         with WinbindexClient() as client:
-            entry = next(client.find("kernel32.dll", with_pdb=True))
+            entry = next(client.find("kernel32.dll", predicate=_has_pdb))
             with pytest.raises(DownloadError) as exc:
                 client.download_binary(entry, tmp_path)
         assert not isinstance(exc.value, FileNotIndexedError)
@@ -497,7 +513,7 @@ class TestDownloadFailures:
             raise requests.exceptions.ChunkedEncodingError("connection broken")
 
         with WinbindexClient(max_retries=0) as client:
-            entry = next(client.find("kernel32.dll", with_pdb=True))
+            entry = next(client.find("kernel32.dll", predicate=_has_pdb))
             # Patch only once the metadata has been fetched.
             monkeypatch.setattr(requests.Response, "iter_content", broken_iter)
             with pytest.raises(DownloadError) as exc:
@@ -514,7 +530,7 @@ class TestDownloadFailures:
             responses.GET, bin_url, body=b"12345", headers={"Content-Length": "10"}, auto_calculate_content_length=False
         )
         with WinbindexClient(max_retries=0) as client:
-            entry = next(client.find("kernel32.dll", with_pdb=True))
+            entry = next(client.find("kernel32.dll", predicate=_has_pdb))
             with pytest.raises(DownloadError):
                 client.download_binary(entry, tmp_path)
         assert not list(tmp_path.iterdir())
@@ -523,7 +539,7 @@ class TestDownloadFailures:
         bin_url = f"{DEFAULT_SYMBOL_SERVER_URL}/kernel32.dll/DEADBEEF1000/kernel32.dll"
         mocked_kernel32.add(responses.GET, bin_url, body=b"bin")
         with WinbindexClient() as client:
-            entry = next(client.find("kernel32.dll", with_pdb=True))
+            entry = next(client.find("kernel32.dll", predicate=_has_pdb))
             client.download_binary(entry, tmp_path)
         assert mocked_kernel32.calls[-1].request.headers["Accept-Encoding"] == "identity"
 
@@ -541,7 +557,7 @@ class TestDownloadFailures:
         )
         calls: list[tuple[int, int | None]] = []
         with WinbindexClient(max_retries=0) as client:
-            entry = next(client.find("kernel32.dll", with_pdb=True))
+            entry = next(client.find("kernel32.dll", predicate=_has_pdb))
             path = client.download_binary(entry, tmp_path, progress=lambda d, t: calls.append((d, t)))
         assert path.read_bytes() == payload
         assert calls[-1] == (len(payload), None)
@@ -558,7 +574,7 @@ class TestDownloadFailures:
         mocked_kernel32.add(responses.GET, bin_url, status=404)
         errors = []
         with WinbindexClient() as client:
-            entry = next(client.find("kernel32.dll", with_pdb=True))
+            entry = next(client.find("kernel32.dll", predicate=_has_pdb))
             written = client.download_many([entry], tmp_path, on_error=lambda e, err: errors.append(err))
         assert written == []
         assert len(errors) == 1 and isinstance(errors[0], DownloadError)

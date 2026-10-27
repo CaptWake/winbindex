@@ -46,7 +46,7 @@ def main() -> int:
         default=DEFAULT_FILES,
         help="List of filenames to download.",
     )
-    parser.add_argument("--with-pdb", action="store_true", help="Also download PDBs.")
+    parser.add_argument("--pdb", action="store_true", help="Also download PDBs the index has details for.")
     parser.add_argument("--workers", type=int, default=4)
     args = parser.parse_args()
 
@@ -66,7 +66,7 @@ def main() -> int:
                     client.download_many,
                     [entry],
                     dest,
-                    include_pdb=args.with_pdb,
+                    include_pdb=args.pdb,
                     overwrite=False,
                 ): entry
                 for entry in all_entries

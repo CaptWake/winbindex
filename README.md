@@ -61,18 +61,56 @@ optional and are combined with logical AND:
 | `machine_type` | `int` | PE `Machine` field — `0x8664` (x64), `0x14C` (x86), `0xAA64` (ARM64); see `parse_machine_type("x64")`. |
 | `signed` | `bool` | Authenticode signing status. |
 | `downloadable` | `bool` | Has both `timestamp` and `virtualSize`. |
-| `with_pdb` | `bool` | Has PDB metadata in the index. |
-| `predicate` | `Callable[[FileEntry], bool]` | Arbitrary user predicate. |
+| `predicate` | `Callable[[FileEntry], bool]` | Any other condition; see below. |
 
 The same filters are available as `winbindex.filter_entries(entries, ...)`
 for entries you already hold. `FileEntry` also exposes `version_tuple`
 (numeric, for sorting), `short_version`, `machine_name`, `is_signed` and
 `release_date`.
 
+### Custom conditions with `predicate`
+
+`predicate` takes any function that receives a `FileEntry` and returns
+`True` to keep it. It runs after the other filters, so it only sees
+entries they already accepted.
+
+`windows_version` matches one release exactly; a predicate can match a
+whole family. Every x64 `ntdll.dll` that shipped in any Windows 11
+release:
+
+```python
+from winbindex import WinbindexClient
+
+with WinbindexClient() as client:
+    for entry in client.find(
+        "ntdll.dll",
+        machine_type=0x8664,
+        predicate=lambda e: any(v.startswith("11-") for v in e.windows_versions),
+    ):
+        print(entry.short_version, sorted(entry.windows_versions))
+```
+
+A predicate is also how you keep only the entries whose PDB details
+(name, GUID and age) are in the index, so that `download_pdb()` can
+fetch the PDB without downloading the binary first:
+
+```python
+with WinbindexClient() as client:
+    for entry in client.find("ntdll.dll", predicate=lambda e: e.has_pdb_download):
+        client.download_pdb(entry, "symbols/")
+```
+
+The current Winbindex data rarely has these details (none of the common
+system binaries we checked do), so this usually finds nothing. Read the
+PDB details from the binary instead, as shown next.
+
+Predicates combine like any Python condition, for example
+`lambda e: e.is_signed and (e.release_date or "") >= "2024-01-01"`.
+
 ### Downloading PDBs when the index doesn't have them
 
-About 80% of the indexed files don't carry a PDB triple. The recovery
-path is to download the binary, then read the PDB info out of the PE's
+The index usually has no PDB details for a file. The reliable path is
+to download the binary, then read the PDB info out of the PE's
 `IMAGE_DEBUG_TYPE_CODEVIEW` debug record:
 
 ```python
@@ -93,7 +131,7 @@ with WinbindexClient() as client:
 $ winbindex info ntoskrnl.exe            # what does the index know about this file?
 ntoskrnl.exe
   description       NT Kernel & System
-  entries           1143 (1141 downloadable · 0 with PDB metadata · 1018 signed)
+  entries           1143 (1141 downloadable · 1018 signed)
   architectures     x64 1142 · ? 1
   file versions     10.0.10240.16384 ... 10.0.28000.2952
   release dates     2015-07-29 ... 2026-09-14
@@ -107,11 +145,10 @@ $ winbindex list ntoskrnl.exe --windows-version 11-22H2 --machine x64 --signed -
 SHA256            VERSION         ARCH  SIGNED     SIZE  RELEASED    WINDOWS  UPDATES    DOWNLOAD
 945b23dbe1c67bb8  10.0.22621.382  x64   yes     11.4 MB  2022-09-20  11-22H2  BASE       bin
 f70a89c1f806ed10  10.0.22621.525  x64   yes     11.4 MB  2022-09-27  11-22H2  KB5019311  bin
-showing 2 of 74 matching entries (2 downloadable, 0 with PDB metadata)
+showing 2 of 74 matching entries (2 downloadable)
 
 $ winbindex url kernel32.dll --file-version "10.0.22621.*" --latest   # newest build per arch
 $ winbindex url kernel32.dll --sha256 70f1e69a                        # one entry, prefix match
-$ winbindex url kernel32.dll --with-pdb --pdb                         # PDB URLs where the index has them
 
 $ winbindex download kernel32.dll --windows-version 11-22H2 --machine x64 --latest --pdb -o ./out
 [1/1] kernel32.dll 10.0.22621.5415 x64   796.4 KB  ok  -> out/70f1e69a1d0602ec/kernel32.dll
@@ -133,8 +170,9 @@ Highlights:
   Entries lacking the sort value (e.g. no version) are listed last.
 - `url` and `download` only consider entries that can be downloaded, so
   `--latest` picks the same build in both.
-- `download --pdb` uses the PDB triple from the index when present and
-  otherwise extracts it from the downloaded binary's debug directory.
+- `url` prints binary URLs only. A PDB's location is read from the
+  binary's debug directory, so `download --pdb` downloads each binary,
+  parses it and then fetches its PDB.
   `--layout sha|version|flat` controls the directory structure and
   `--dry-run` shows what would happen, including files that would be
   skipped. An existing file is skipped only if it is the same build

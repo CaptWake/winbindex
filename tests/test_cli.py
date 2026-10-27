@@ -247,10 +247,10 @@ class TestList:
         assert [ln.split()[1] for ln in lines[1:]] == ["10.0.19041.1", "10.0.22621.1", "11.0.22000.42"]
         row_a = next(ln for ln in lines if ln.startswith("a" * 16))
         assert "x64" in row_a and "yes" in row_a and "1.2 KB" in row_a and "2023-03-21" in row_a
-        assert row_a.endswith("bin+pdb")
+        assert row_a.endswith("bin")
         row_b = next(ln for ln in lines if ln.startswith("b" * 16))
         assert "x86" in row_b and " no " in row_b and row_b.endswith("-")
-        assert "3 matching entries (2 downloadable, 1 with PDB metadata)" in err
+        assert "3 matching entries (2 downloadable)" in err
 
     def test_full_version_and_no_header(self, rsps, run):
         code, out, _ = run("list", "kernel32.dll", "--full-version", "--no-header", "--sha256", SHA_A)
@@ -274,9 +274,8 @@ class TestList:
         assert item["signed"] is True
         assert item["description"] == "Windows NT BASE API Client DLL"
         assert item["releaseDate"] == "2023-03-21"
-        assert item["pdb"] == {"name": "kernel32.pdb", "guid": "1B72224D37B8179228200ED8994498B2", "age": 1}
         assert item["binaryUrl"] == BIN_A
-        assert item["pdbUrl"] == PDB_A
+        assert "pdb" not in item and "pdbUrl" not in item  # the index's PDB details are not used
         assert item["releases"][0]["update"] == "KB5023778"
 
     def test_sha256_prefix(self, rsps, run):
@@ -324,8 +323,8 @@ class TestList:
         assert "--machine arm64; available: x64, x86" in err
 
     def test_hint_names_the_filter_that_removed_everything(self, rsps, run):
-        _, _, err = run("list", "kernel32.dll", "--with-pdb", "--machine", "x86")
-        assert "the other filters match 1 entry of kernel32.dll, but without PDB metadata" in err
+        _, _, err = run("list", "kernel32.dll", "--downloadable", "--machine", "x86")
+        assert "the other filters match 1 entry of kernel32.dll, but without download metadata" in err
 
     def test_singular_summary(self, rsps, run):
         _, _, err = run("list", "kernel32.dll", "--sha256", "aaaa")
@@ -384,17 +383,13 @@ class TestUrl:
         assert len(out.splitlines()) == 2
         assert "warning: --sha256 'ab' is ambiguous: it matches 2 kernel32.dll entries" in err
 
-    def test_pdb_urls(self, rsps, run):
-        code, out, err = run("url", "kernel32.dll", "--pdb")
-        assert code == 0
-        assert out.splitlines() == [PDB_A]
-        assert "skipped 2 entries without PDB metadata" in err
-        assert "download --pdb" in err
-
-    def test_nothing_printed_is_exit_1(self, rsps, run):
-        code, out, _ = run("url", "kernel32.dll", "--pdb", "--machine", "x86")
-        assert code == 1
-        assert out == ""
+    @pytest.mark.parametrize("argv", [["url", "x.dll", "--pdb"], ["list", "x.dll", "--with-pdb"]])
+    def test_removed_pdb_options_are_rejected(self, capsys, argv):
+        # PDBs are only located by parsing a downloaded binary (`download --pdb`).
+        with pytest.raises(SystemExit) as exc:
+            main([*argv, "--no-cache"])
+        assert exc.value.code == 2
+        assert "unrecognized arguments" in capsys.readouterr().err
 
     def test_custom_symbol_server(self, rsps, run):
         code, out, _ = run("url", "kernel32.dll", "--latest", "--machine", "x64", "--symbol-server", "http://m/s/")
@@ -484,22 +479,9 @@ class TestDownload:
         code, out, err = run("download", "kernel32.dll", "--dry-run", "--pdb", "-o", str(dest))
         assert code == 0
         assert "exists (would skip)" in out
-        assert f"+ kernel32.pdb  {PDB_A}" in out  # PDB triple from the index
-        assert "+ pdb: not in the index; read from the binary after download" in out
+        assert out.count("+ pdb: read from the binary after download") == 2
+        assert PDB_A not in out  # the PDB triple in the index is not used
         assert "dry run: 1 file to download (1.2 KB), 1 already present; nothing written" in err
-
-    def test_pdb_name_from_the_index_cannot_escape_dest(self, rsps, run, tmp_path: Path):
-        pdb = {"pdbName": "../../escaped.pdb", "pdbGuid": "1B72224D37B8179228200ED8994498B2", "pdbAge": 1}
-        rsps.replace(responses.GET, META_URL, body=_gz({"a" * 64: _entry("10.0.1", 0x8664, pdb=pdb)}))
-        rsps.add(responses.GET, f"{DEFAULT_SYMBOL_SERVER_URL}/kernel32.dll/111111112000/kernel32.dll", body=b"bin")
-        pdb_url = f"{DEFAULT_SYMBOL_SERVER_URL}/escaped.pdb/1B72224D37B8179228200ED8994498B21/escaped.pdb"
-        rsps.add(responses.GET, pdb_url, body=b"pdb")
-        dest = tmp_path / "a" / "b" / "out"
-        code, _, _ = run("download", "kernel32.dll", "--pdb", "-o", str(dest))
-        assert code == 0
-        assert [p.relative_to(tmp_path) for p in tmp_path.rglob("escaped.pdb")] == [
-            Path("a/b/out") / ("a" * 16) / "escaped.pdb"
-        ]
 
     def test_version_layout_with_unknown_arch_is_a_safe_directory_name(self, rsps, run, tmp_path: Path):
         rsps.replace(responses.GET, META_URL, body=_gz({"a" * 64: _entry("10.0.1 / x", None)}))
@@ -519,13 +501,17 @@ class TestDownload:
         assert "Done: 1 downloaded, 0 skipped (exist), 1 failed" in err
         assert not (dest / SHA_C[:16] / "kernel32.dll.part").exists()
 
-    def test_pdb_from_index(self, rsps, run, tmp_path: Path):
-        rsps.add(responses.GET, BIN_A, body=b"bin")
-        rsps.add(responses.GET, PDB_A, body=b"pdb")
+    def test_pdb_comes_from_the_binary_even_when_the_index_has_one(self, rsps, run, tmp_path: Path):
+        # SHA_A carries a PDB triple in the index; it must be ignored in favour of the binary's own record.
+        guid = uuid.UUID("0123456789ABCDEF0123456789ABCDEF")
+        rsps.add(responses.GET, BIN_A, body=_minimal_pe(_rsds(guid, 2, b"c:\\x\\kernel32.pdb")))
+        pdb_url = f"{DEFAULT_SYMBOL_SERVER_URL}/kernel32.pdb/0123456789ABCDEF0123456789ABCDEF2/kernel32.pdb"
+        rsps.add(responses.GET, pdb_url, body=b"from-binary")
+        rsps.add(responses.GET, PDB_A, body=b"from-index")
         dest = tmp_path / "out"
         code, out, err = run("download", "kernel32.dll", "--sha256", "aaaa", "--pdb", "-o", str(dest))
         assert code == 0
-        assert (dest / SHA_A[:16] / "kernel32.pdb").read_bytes() == b"pdb"
+        assert (dest / SHA_A[:16] / "kernel32.pdb").read_bytes() == b"from-binary"
         assert "+ kernel32.pdb" in out
         assert "PDBs: 1 downloaded" in err
 
@@ -617,7 +603,7 @@ class TestInfo:
         assert code == 0
         assert out.startswith("kernel32.dll\n")
         assert "description       Windows NT BASE API Client DLL" in out
-        assert "3 (2 downloadable · 1 with PDB metadata · 2 signed)" in out
+        assert "3 (2 downloadable · 2 signed)" in out
         assert "x64 2 · x86 1" in out
         assert "10.0.19041.1 ... 11.0.22000.42" in out
         assert "2018-10-09 ... 2023-10-31" in out
@@ -635,6 +621,7 @@ class TestInfo:
             "11-23H2": 1,
         }
         assert [la["machine"] for la in data["latestPerArch"]] == ["x64", "x86"]
+        assert "withPdb" not in data
 
     def test_filters_apply(self, rsps, run):
         code, out, _ = run("info", "kernel32.dll", "--machine", "x86", "--json")
